@@ -1,19 +1,25 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"time"
 
 	wfclientset "github.com/argoproj/argo/pkg/client/clientset/versioned"
+	"github.com/argoproj/argo/pkg/client/clientset/versioned/scheme"
 	cmdutil "github.com/argoproj/argo/util/cmd"
 	"github.com/argoproj/argo/util/stats"
 	"github.com/argoproj/argo/workflow/common"
 	"github.com/argoproj/argo/workflow/controller"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	election "k8s.io/client-go/tools/leaderelection"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	"k8s.io/client-go/tools/record"
+
 	// load the gcp plugin (required to authenticate against GKE clusters).
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	// load the oidc plugin (required to authenticate with OpenID Connect).
@@ -42,6 +48,10 @@ type rootFlags struct {
 
 var (
 	rootArgs rootFlags
+
+	leaseDuration = 15 * time.Second
+	renewDuration = 5 * time.Second
+	retryPeriod   = 3 * time.Second
 )
 
 func init() {
@@ -81,6 +91,7 @@ func Run(cmd *cobra.Command, args []string) {
 
 	kubeclientset := kubernetes.NewForConfigOrDie(config)
 	wflientset := wfclientset.NewForConfigOrDie(config)
+	leaderElectionClient := kubernetes.NewForConfigOrDie(config)
 
 	// start a controller on instances of our custom resource
 	wfController := controller.NewWorkflowController(config, kubeclientset, wflientset, rootArgs.configMap)
@@ -89,9 +100,44 @@ func Run(cmd *cobra.Command, args []string) {
 		log.Fatalf("%+v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go wfController.Run(ctx, 8, 8)
+	run := func(stopCh <-chan struct{}) {
+		wfController.Run(stopCh, 8, 8)
+	}
+
+	id, err := os.Hostname()
+	if err != nil {
+		log.Fatalf("Failed to get hostname: %v", err)
+	}
+
+	// Prepare event clients.
+	eventBroadcaster := record.NewBroadcaster()
+	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: CLIName})
+
+	namespace := wfController.ConfigMapNS
+	rl := &resourcelock.EndpointsLock{
+		EndpointsMeta: metav1.ObjectMeta{
+			Namespace: namespace,
+			Name:      CLIName,
+		},
+		Client: leaderElectionClient.CoreV1(),
+		LockConfig: resourcelock.ResourceLockConfig{
+			Identity:      id,
+			EventRecorder: recorder,
+		},
+	}
+
+	election.RunOrDie(election.LeaderElectionConfig{
+		Lock:          rl,
+		LeaseDuration: leaseDuration,
+		RenewDeadline: renewDuration,
+		RetryPeriod:   retryPeriod,
+		Callbacks: election.LeaderCallbacks{
+			OnStartedLeading: run,
+			OnStoppedLeading: func() {
+				log.Fatalf("leader election lost")
+			},
+		},
+	})
 
 	// Wait forever
 	select {}

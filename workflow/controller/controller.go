@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -119,13 +118,13 @@ func NewWorkflowController(restConfig *rest.Config, kubeclientset kubernetes.Int
 }
 
 // Run starts an Workflow resource controller
-func (wfc *WorkflowController) Run(ctx context.Context, wfWorkers, podWorkers int) {
+func (wfc *WorkflowController) Run(stopCh <-chan struct{}, wfWorkers, podWorkers int) {
 	defer wfc.wfQueue.ShutDown()
 	defer wfc.podQueue.ShutDown()
 
 	log.Infof("Workflow Controller (version: %s) starting", argo.GetVersion())
 	log.Info("Watch Workflow controller config map updates")
-	_, err := wfc.watchControllerConfigMap(ctx)
+	_, err := wfc.watchControllerConfigMap(stopCh)
 	if err != nil {
 		log.Errorf("Failed to register watch for controller config map: %v", err)
 		return
@@ -133,25 +132,26 @@ func (wfc *WorkflowController) Run(ctx context.Context, wfWorkers, podWorkers in
 
 	wfc.wfInformer = wfc.newWorkflowInformer()
 	wfc.podInformer = wfc.newPodInformer()
-	go wfc.wfInformer.Run(ctx.Done())
-	go wfc.podInformer.Run(ctx.Done())
-	go wfc.podLabeler(ctx.Done())
+	go wfc.wfInformer.Run(stopCh)
+	go wfc.podInformer.Run(stopCh)
+	go wfc.podLabeler(stopCh)
 
 	// Wait for all involved caches to be synced, before processing items from the queue is started
 	for _, informer := range []cache.SharedIndexInformer{wfc.wfInformer, wfc.podInformer} {
-		if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
+		if !cache.WaitForCacheSync(stopCh, informer.HasSynced) {
 			log.Error("Timed out waiting for caches to sync")
 			return
 		}
 	}
 
 	for i := 0; i < wfWorkers; i++ {
-		go wait.Until(wfc.runWorker, time.Second, ctx.Done())
+		go wait.Until(wfc.runWorker, time.Second, stopCh)
 	}
 	for i := 0; i < podWorkers; i++ {
-		go wait.Until(wfc.podWorker, time.Second, ctx.Done())
+		go wait.Until(wfc.podWorker, time.Second, stopCh)
 	}
-	<-ctx.Done()
+
+	<-stopCh
 }
 
 // podLabeler will label all pods on the controllers completedPod channel as completed
@@ -366,7 +366,7 @@ func (wfc *WorkflowController) newWorkflowInformer() cache.SharedIndexInformer {
 	return informer
 }
 
-func (wfc *WorkflowController) watchControllerConfigMap(ctx context.Context) (cache.Controller, error) {
+func (wfc *WorkflowController) watchControllerConfigMap(stopCh <-chan struct{}) (cache.Controller, error) {
 	source := wfc.newControllerConfigMapWatch()
 	_, controller := cache.NewInformer(
 		source,
@@ -393,7 +393,7 @@ func (wfc *WorkflowController) watchControllerConfigMap(ctx context.Context) (ca
 			},
 		})
 
-	go controller.Run(ctx.Done())
+	go controller.Run(stopCh)
 	return controller, nil
 }
 

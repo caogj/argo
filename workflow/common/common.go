@@ -81,11 +81,11 @@ const (
 
 	// Various environment variables containing pod information exposed to the executor container(s)
 
-	// EnvVarPodIP contains the IP of the pod (currently unused)
+	// EnvVarPodIP contains the IP of the pod
 	EnvVarPodIP = "ARGO_POD_IP"
-	// EnvVarPodName contains the name of the pod (currently unused)
+	// EnvVarPodName contains the name of the pod
 	EnvVarPodName = "ARGO_POD_NAME"
-	// EnvVarNamespace contains the namespace of the pod (currently unused)
+	// EnvVarNamespace contains the namespace of the pod
 	EnvVarNamespace = "ARGO_NAMESPACE"
 
 	// These are global variables that are added to the scope during template execution and can be referenced using {{}} syntax

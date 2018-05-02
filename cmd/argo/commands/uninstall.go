@@ -79,6 +79,18 @@ func uninstall(uninstallArgs *uninstallFlags) {
 		fmt.Printf("ConfigMap '%s' deleted\n", uninstallArgs.configMap)
 	}
 
+	// Delete the leader election endpoint
+	epClient := clientset.CoreV1().Endpoints(uninstallArgs.namespace)
+	err = epClient.Delete(uninstallArgs.controllerName, &metav1.DeleteOptions{})
+	if err != nil {
+		if !apierr.IsNotFound(err) {
+			log.Fatalf("Failed to delete endpoint '%s': %v", uninstallArgs.controllerName, err)
+		}
+		fmt.Printf("Endpoint '%s' in namespace '%s' not found\n", uninstallArgs.controllerName, uninstallArgs.namespace)
+	} else {
+		fmt.Printf("Endpoint '%s' deleted\n", uninstallArgs.controllerName)
+	}
+
 	// Delete controller and UI role binding
 	for _, bindingName := range []string{ArgoControllerClusterRoleBinding, ArgoUIClusterRoleBinding} {
 		if err := clientset.RbacV1().ClusterRoleBindings().Delete(bindingName, &metav1.DeleteOptions{}); err != nil {
